@@ -6,7 +6,7 @@ import tf
 import tf.msg
 
 from scipy.spatial.transform import Rotation as R
-from geometry_msgs.msg import TwistStamped
+from geometry_msgs.msg import PoseWithCovarianceStamped
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Float32
 from smarc_msgs.msg import ThrusterRPM
@@ -42,11 +42,14 @@ class ControlNode:
 
         #self.twistPublisher = rospy.Publisher("lolo/twist_command", TwistStamped, queue_size=1)
 
+        self._estDSPoseMsg = None
+        self.dsPoseSubscriber = rospy.Subscriber("docking_Station/estimated_pose", PoseWithCovarianceStamped, self._dsPoseCallback) 
+
         self.rudderPub = rospy.Publisher('core/rudder_cmd', Float32, queue_size=1)
         self.elevatorPub = rospy.Publisher('core/elevator_cmd', Float32, queue_size=1)
         #self.elevon_stbd_angle = rospy.Publisher('core/elevon_strb_cmd', Float32, queue_size=1)
         #self.elevon_port_angle = rospy.Publisher('core/elevon_port_cmd', Float32, queue_size=1)
-        self.thrusterPub = rospy.Publisher('core/thruster_cmd', Float32, queue_size=1)
+        self.thrusterPub = rospy.Publisher('core/thruster_cmd', ThrusterRPM, queue_size=1)
 
         self._odometryMsg = None
         self._auvState = None
@@ -72,6 +75,9 @@ class ControlNode:
 
         fig = plt.figure()
         self.ax = fig.add_subplot(111, projection='3d')
+
+    def _dsPoseCallback(self, msg):
+        self._estDSPoseMsg = msg
 
     def _odometryCallback(self, msg):
         self._odometryMsg = msg
@@ -106,6 +112,7 @@ class ControlNode:
         pitch = self._auvState[5]
         deltaMG = 0
         X = C1*u + C2*abs(u)*u -deltaMG*np.sin(pitch)
+
         if P*(uRef-u)/self.dt < X:
             return 0
 
@@ -116,6 +123,9 @@ class ControlNode:
         r = self._auvState[11]
         u = self._auvState[6]
 
+        if u == 0:
+            return 0
+
         return (P*(rRef-r)/self.dt - C8*r - C9*abs(r)*r) / (C10*u**2)
 
     def _calcDeltaE(self, qRef, pTime=1):
@@ -123,8 +133,11 @@ class ControlNode:
         u = self._auvState[6]
         pitch = self._auvState[4]
         q = self._auvState[10]
-        deltaE = (P*(qRef-q)/self.dt - C4*q - C5*abs(q)*q - C6*np.sin(pitch)) / (C7*u**2)
-        return deltaE
+
+        if u == 0:
+            return 0
+
+        return (P*(qRef-q)/self.dt - C4*q - C5*abs(q)*q - C6*np.sin(pitch)) / (C7*u**2)
 
     def update(self, dt):
         self.dt = dt
@@ -137,10 +150,11 @@ class ControlNode:
             loloToTargetTrans, loloToTargetRot = self.listener.lookupTransform("target_link",
                                                                self.auvName + "/base_link", 
                                                                rospy.Time(0))
+            """
             loloToLosTrans, loloToLosRot = self.listener.lookupTransform("los_link",
                                                     self.auvName + "/base_link", 
                                                     rospy.Time(0))
-
+            """
             losToLoloTrans, losToLoloRot = self.listener.lookupTransform(self.auvName + "/base_link",
                                                                          "los_link",
                                                                          rospy.Time(0))
@@ -197,8 +211,8 @@ class ControlNode:
             vyErr = loloToTargetTrans[1]
             vyD = (vyErr-self.vyErrPrev)*1.0
             wz = -yaw*.1
-            if vyErr < 0.5:
-                self.wzI += vyErr*.001
+            if vyErr < 1:
+                self.wzI += vyErr*.0005
             self.vyErrPrev = vyErr
 
             # wy
@@ -247,7 +261,7 @@ class ControlNode:
         n, deltaR, deltaE = self._velToControlCommand()
         self.rudderPub.publish(Float32(deltaR))
         self.elevatorPub.publish(Float32(deltaE))
-        self.thrusterPub.publish(Float32(n))
+        self.thrusterPub.publish(ThrusterRPM(n))
         #self.twistPublisher.publish(velToTwist(self.auvName + "/base_link", self.velAUV))
 
     def run(self):
