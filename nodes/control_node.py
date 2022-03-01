@@ -11,7 +11,7 @@ from nav_msgs.msg import Odometry
 from std_msgs.msg import Float32
 from smarc_msgs.msg import ThrusterRPM
 
-from lolo_perception.perception_ros_utils import vectorToTransform
+from lolo_perception.perception_ros_utils import vectorToTransform, poseToVector
 from lolo_control.control_utils import velToTwist, odometryToState
 
 from lolo_simulation.coordinate_system import CoordinateSystemArtist
@@ -40,10 +40,25 @@ class ControlNode:
         self.dockingStationName = "docking_station"
         self.auvName = "lolo"
 
+        self.listener = tf.TransformListener()
+
+        # First get the transform from camera to AUV base link 
+        while not rospy.is_shutdown():
+            try:
+                camToAUVTransl, camToAUVQuat = self.listener.lookupTransform(self.auvName + "/base_link",
+                                                                             "lolo_camera_link",
+                                                                             rospy.Time(0))
+            except:
+                rospy.loginfo_throttle(2, "Waiting for transform from {} to {}".format("lolo_camera_link", self.auvName + "/base_link"))
+            else:
+                self.camToAUVTransl = np.array(camToAUVTransl)
+                self.camToAUVRotVec = R.from_quat(camToAUVQuat).as_rotvec()
+                break
+                
         #self.twistPublisher = rospy.Publisher("lolo/twist_command", TwistStamped, queue_size=1)
 
         self._estDSPoseMsg = None
-        self.dsPoseSubscriber = rospy.Subscriber("docking_Station/estimated_pose", PoseWithCovarianceStamped, self._dsPoseCallback) 
+        self.dsPoseSubscriber = rospy.Subscriber('docking_station/feature_model/estimated_pose', PoseWithCovarianceStamped, self._dsPoseCallback) 
 
         self.rudderPub = rospy.Publisher('core/rudder_cmd', Float32, queue_size=1)
         self.elevatorPub = rospy.Publisher('core/elevator_cmd', Float32, queue_size=1)
@@ -56,7 +71,6 @@ class ControlNode:
         self.odometrySub = rospy.Subscriber("core/odometry", Odometry, self._odometryCallback)
 
         self.transformPublisher = rospy.Publisher("/tf", tf.msg.tfMessage, queue_size=1)
-        self.listener = tf.TransformListener()
         
         self.hz = 30
         self.dt = 1. / self.hz
@@ -139,6 +153,26 @@ class ControlNode:
 
         return (P*(qRef-q)/self.dt - C4*q - C5*abs(q)*q - C6*np.sin(pitch)) / (C7*u**2)
 
+    def _calcControlFrames(self):
+        if self._estDSPoseMsg:
+            dsToCamTransl, dsToCamRotVec = poseToVector(self._estDSPoseMsg)
+            self._estDSPoseMsg = None
+
+            dsToCamRot = R.from_rotvec(dsToCamRotVec)
+            losToDSRot = R.from_euler("XYZ", (np.pi/2, 0, -np.pi/2))
+
+            dsToAUVTransl = self.camToAUVTransl + R.from_rotvec(self.camToAUVRotVec).apply(dsToCamTransl)
+            losToAUVRot = R.from_rotvec(self.camToAUVRotVec)*dsToCamRot*losToDSRot
+            #losToAUVRotMat = losToAUVRot.as_dcm()
+
+            targetToLoloTrans = dsToAUVTransl + losToAUVRot.apply([9, 0, 0])
+            losToLoloTrans = dsToAUVTransl + losToAUVRot.apply([12, 0, 0])
+            return targetToLoloTrans, losToLoloTrans
+        
+        rospy.loginfo("No estimated docking station pose retrieved, using same control command")
+
+        return None
+
     def update(self, dt):
         self.dt = dt
         if self._odometryMsg:
@@ -146,44 +180,23 @@ class ControlNode:
         else:
             print("No auv state published")
             return
-        try:
-            loloToTargetTrans, loloToTargetRot = self.listener.lookupTransform("target_link",
-                                                               self.auvName + "/base_link", 
-                                                               rospy.Time(0))
-            """
-            loloToLosTrans, loloToLosRot = self.listener.lookupTransform("los_link",
-                                                    self.auvName + "/base_link", 
-                                                    rospy.Time(0))
-            """
-            losToLoloTrans, losToLoloRot = self.listener.lookupTransform(self.auvName + "/base_link",
-                                                                         "los_link",
-                                                                         rospy.Time(0))
-        except:
+
+        ret = self._calcControlFrames()
+        if ret is None:
             self.velAUV = np.array([1.5, 0, 0, 0, 0, 0])
         else:
-            
+            targetToLoloTrans, losToLoloTrans = ret
             # Los controller
-            losToLoloRotMat = R.from_quat(losToLoloRot).as_dcm()
             losRotX = losToLoloTrans/np.linalg.norm(losToLoloTrans)
-            #losRotX = loloToLosTrans/np.linalg.norm(loloToLosTrans)
             losRotY = losRotX.copy()
             losRotY[2] = 0 # project to xy-plane
             losRotY = np.array([-losRotY[1], losRotY[0], 0]) # y is x rotated by 90 deg
             losRotY = losRotY/np.linalg.norm(losRotY) # normalize
             losRotZ = np.cross(losRotX, losRotY)
             losRotZ = losRotZ/np.linalg.norm(losRotZ)
-            """
-            loloToLosRotMat = R.from_quat(loloToLosRot).as_dcm()
-            losRotXLosFrame = np.matmul(loloToLosRotMat, losRotX)
-            losRotXLosFrame[2] = 0 # project on xy-plane TODO: maybe y axis should be on xy plane for lolo/base_link?
-            losRotXLosFrame = losRotXLosFrame/np.linalg.norm(losRotXLosFrame) # normalize
-            losRotYLosFrame = np.array([-losRotXLosFrame[1], losRotXLosFrame[0], 0]) # y is x rotated by 90 deg
-            losRotZLosFrame = np.cross(losRotXLosFrame, losRotYLosFrame)
-            losRotY = np.matmul(losToLoloRotMat, losRotYLosFrame)
-            losRotZ = np.matmul(losToLoloRotMat, losRotZLosFrame)
-            """
 
             losRotMat = np.stack([losRotX, losRotY, losRotZ], axis=1)
+
             #roll, pitch, yaw = R.from_dcm(losRotMat).as_euler("XYZ")
             yaw, pitch, roll = R.from_dcm(losRotMat).as_euler("ZYX")
 
@@ -201,14 +214,14 @@ class ControlNode:
             plt.pause(0.0001)
 
             # vx
-            vxErr = -loloToTargetTrans[0]
+            vxErr = targetToLoloTrans[0]
             vxP = vxErr*0.9
             vxD = (vxErr-self.vxErrPrev)*0.1
             self.vxI += vxErr*.01
             self.vxErrPrev = vxErr
 
             # wz
-            vyErr = loloToTargetTrans[1]
+            vyErr = -targetToLoloTrans[1]
             vyD = (vyErr-self.vyErrPrev)*1.0
             wz = -yaw*.1
             if vyErr < 1:
@@ -216,7 +229,7 @@ class ControlNode:
             self.vyErrPrev = vyErr
 
             # wy
-            vzErr = -loloToTargetTrans[2]
+            vzErr = targetToLoloTrans[2]
             vzD = (vzErr-self.vzErrPrev)*1.0
             wy = -pitch*0.1
             self.vzErrPrev = vzErr
@@ -247,9 +260,6 @@ class ControlNode:
             #self.auv.controlCameraDelta(deltaYaw, P=0.01)
 
     def _velToControlCommand(self):
-        #n = self.velAUV[0]*150
-        #deltaR = -self.velAUV[5]*3
-        #deltaE = -self.velAUV[4]*3
         n = self._calcThruster(self.velAUV[0], pTime=1) # Achieve ref velocity in pTime sec
         deltaR = self._calcDeltaR(self.velAUV[5], pTime=1)
         deltaE = self._calcDeltaE(self.velAUV[4], pTime=1)
