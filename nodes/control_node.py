@@ -172,6 +172,10 @@ class ControlNode:
             # direction vector of the los line
             losLineVector = losToAUVRot.apply([1, 0, 0])
 
+            # displace the position vector so that the camera is aligned with the docking station
+            # except for displacement in x
+            dsToAUVTransl -= np.array([0, self.camToAUVTransl[1], self.camToAUVTransl[2]])
+
             # target frame is the projection of the (negative) translation from ds to AUV
             # on the losLine
             if self.targetToDSDist is None:
@@ -247,9 +251,13 @@ class ControlNode:
             wy = -pitch*0.1
             self.vzErrPrev = vzErr
 
-            self.velAUV[0] = vxP + vxD + self.vxI 
+            self.velAUV[0] = vxP + vxD + self.vxI
             self.velAUV[5] = wz + vyD + self.wzI
             self.velAUV[4] = wy + vzD#+ self.wyI
+
+            #if np.linalg.norm([vxErr, vyErr]) < 0.2:
+            #    self.targetToDSDist -= 1
+            #    self.targetToDSDist = max(self.targetToDSDist, 5)
 
             # disregard derivatives before at least 2 measurements have been received
             if self.firstControl:
