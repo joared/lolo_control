@@ -87,6 +87,9 @@ class ControlNode:
         self.wyI = 0
         self.vzErrPrev = 0
 
+        self.targetToDSDist = None
+        self.firstControl = True
+
         fig = plt.figure()
         self.ax = fig.add_subplot(111, projection='3d')
 
@@ -99,23 +102,24 @@ class ControlNode:
     def publishControlFrames(self):
         timeStamp = rospy.Time.now()
 
-        targetTrans = np.array([0., 0., -9.])
-        targetRot = R.from_euler("XYZ", (np.pi/2, 0, -np.pi/2)).as_rotvec()
-        targetTransform = vectorToTransform(self.dockingStationName + "/feature_model_estimated_link",
-                                            "target_link",
-                                            targetTrans,
-                                            targetRot,
-                                            timeStamp=timeStamp)
-        
+        if self.targetToDSDist:
+            targetTrans = np.array([0., 0., -self.targetToDSDist])
+            targetRot = R.from_euler("XYZ", (np.pi/2, 0, -np.pi/2)).as_rotvec()
+            targetTransform = vectorToTransform(self.dockingStationName + "/feature_model_estimated_link",
+                                                "target_link",
+                                                targetTrans,
+                                                targetRot,
+                                                timeStamp=timeStamp)
+            
 
-        targetTrans[2] -= 3
-        losTransform = vectorToTransform(self.dockingStationName + "/feature_model_estimated_link",
-                                    "los_link",
-                                    targetTrans,
-                                    targetRot,
-                                    timeStamp=timeStamp)
+            targetTrans[2] -= 3
+            losTransform = vectorToTransform(self.dockingStationName + "/feature_model_estimated_link",
+                                        "los_link",
+                                        targetTrans,
+                                        targetRot,
+                                        timeStamp=timeStamp)
 
-        self.transformPublisher.publish(tf.msg.tfMessage([targetTransform, losTransform]))
+            self.transformPublisher.publish(tf.msg.tfMessage([targetTransform, losTransform]))
 
     def _calcThruster(self, uRef, pTime=1):
         """
@@ -165,9 +169,18 @@ class ControlNode:
             losToAUVRot = R.from_rotvec(self.camToAUVRotVec)*dsToCamRot*losToDSRot
             #losToAUVRotMat = losToAUVRot.as_dcm()
 
-            targetToLoloTrans = dsToAUVTransl + losToAUVRot.apply([9, 0, 0])
-            losToLoloTrans = dsToAUVTransl + losToAUVRot.apply([12, 0, 0])
-            return targetToLoloTrans, losToLoloTrans
+            # direction vector of the los line
+            losLineVector = losToAUVRot.apply([1, 0, 0])
+
+            # target frame is the projection of the (negative) translation from ds to AUV
+            # on the losLine
+            if self.targetToDSDist is None:
+                self.targetToDSDist = np.dot(-dsToAUVTransl, losLineVector)
+
+            targetToAUVTrans = dsToAUVTransl + losToAUVRot.apply([self.targetToDSDist, 0, 0])
+            losToLoloTrans = dsToAUVTransl + losToAUVRot.apply([self.targetToDSDist+3, 0, 0])
+
+            return targetToAUVTrans, losToLoloTrans
         
         rospy.loginfo("No estimated docking station pose retrieved, using same control command")
 
@@ -237,13 +250,13 @@ class ControlNode:
             self.velAUV[0] = vxP + vxD + self.vxI 
             self.velAUV[5] = wz + vyD + self.wzI
             self.velAUV[4] = wy + vzD#+ self.wyI
-            
-            
-            #self.velAUV[0] = min(100., self.velAUV[0])
-            #self.velAUV[0] = max(0., self.velAUV[0])
-            #print("VX:", self.velAUV[0])
-            #self.velAUV[5] = max(-1., self.velAUV[5])
-            #self.velAUV[5] = min(1., self.velAUV[5])
+
+            # disregard derivatives before at least 2 measurements have been received
+            if self.firstControl:
+                self.velAUV[0] = self._auvState[6]
+                self.velAUV[5] = self._auvState[11]
+                self.velAUV[4] = self._auvState[10]
+                self.firstControl = False
 
         if self.controlCamera:
             #Rotating the camera towards the detected feature model
@@ -277,9 +290,9 @@ class ControlNode:
     def run(self):
         rate = rospy.Rate(self.hz)
         while not rospy.is_shutdown():
-            self.publishControlFrames()
             self.update(1./self.hz)
             self.publishControlCommand()
+            self.publishControlFrames()
             rate.sleep()
 
 
