@@ -1,8 +1,14 @@
 <launch>
   <arg name="feature_model_yaml" default="big_prototype_5.yaml" />
   <arg name="hz" default="30"/>
+  <arg name="IBVS" default="true"/> 
 
-  <node name="control_node" pkg="lolo_control" type="control_node.py" output="screen" >
+  <node name="control_node" pkg="lolo_control" type="control_node.py" output="screen" if="$(eval arg('IBVS') == false)">
+    <param name="feature_model_yaml" value="$(arg feature_model_yaml)"/>
+    <param name="hz" value="$(arg hz)"/>
+  </node>
+
+  <node name="ibvs_node" pkg="lolo_control" type="ibvs_node.py" output="screen" if="$(eval arg('IBVS') == true)">
     <param name="feature_model_yaml" value="$(arg feature_model_yaml)"/>
     <param name="hz" value="$(arg hz)"/>
   </node>
