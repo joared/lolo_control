@@ -17,7 +17,7 @@ from cv_bridge import CvBridge, CvBridgeError
 
 from lolo_perception.perception_ros_utils import vectorToTransform, poseToVector
 from lolo_perception.perception_utils import plotPosePoints, projectPoints, plotPoints
-from lolo_control.control_utils import velToTwist, odometryToState
+from lolo_control.control_ros_utils import velToTwist, odometryToState
 
 
 class ControlNode:
@@ -43,8 +43,8 @@ class ControlNode:
                 self.camToAUVNEDRotVec = R.from_quat(camToAUVNEDQuat).as_rotvec()
                 break
                 
-        self.cameraInfoSub = rospy.Subscriber("lolo_camera/camera_info", CameraInfo, self._getCameraCallback)
         self.camera = None
+        self.cameraInfoSub = rospy.Subscriber("lolo_camera/camera_info", CameraInfo, self._getCameraCallback)
         while not rospy.is_shutdown() and self.camera is None:
             print("Waiting for camera info to be published")
             rospy.sleep(1)
@@ -87,7 +87,6 @@ class ControlNode:
 
     def _dsPoseCallback(self, msg):
         self._estDSPoseMsg = msg
-
 
     def publishControlImg(self):
         if self.controlImg is not None:
@@ -203,36 +202,18 @@ class ControlNode:
                             self.featureModel.features, 
                             color=(0, 255, 255))
 
-            """
-            # plot ds to virtual cam
-            plotPosePoints(self.virtualControlImg, 
-                        dsToVirtualCamTransl, 
-                        dsToVirtualCamRotVec, 
-                        self.camera, 
-                        self.featureModel.features, 
-                        color=(0, 0, 255))
-
-            # plot target to virtual cam
-            plotPosePoints(self.virtualControlImg, 
-                            targetToVirtualCamTransl, 
-                            targetToVirtualCamRotVec, 
-                            self.camera, 
-                            self.featureModel.features, 
-                            color=(0, 255, 255))
-            """
-
             velVirtualCamera = self.calcIBVSVelocity(targetToVirtualCamTransl, 
                                                      targetToVirtualCamRotVec,
                                                      dsToVirtualCamTransl,
                                                      dsToVirtualCamRotVec,
-                                                     controller="IBVS2",
+                                                     controller="IBVS1",
                                                      drawImg=self.virtualControlImg)
 
             velLinear = R.from_rotvec(self.camToAUVNEDRotVec).apply(velVirtualCamera[:3])
             velAngular = R.from_rotvec(self.camToAUVNEDRotVec).apply(velVirtualCamera[3:])
 
-            velLinear *= 0.9
-            velAngular *= 0.9
+            velLinear *= 0.8
+            velAngular *= 0.8
 
             #self.velAUV = np.array(list(velLinear) + list(velAngular))
             wz, wy, wx = R.from_rotvec(velAngular).as_euler("ZYX")
