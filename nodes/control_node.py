@@ -14,7 +14,7 @@ from smarc_msgs.msg import ThrusterRPM
 
 from lolo_perception.perception_ros_utils import vectorToTransform, poseToVector
 from lolo_perception.perception_utils import plotPosePoints, projectPoints
-from lolo_control.control_utils import velToTwist, odometryToState
+from lolo_control.control_ros_utils import velToTwist, odometryToState
 
 from lolo_simulation.coordinate_system import CoordinateSystemArtist
 import matplotlib.pyplot as plt
